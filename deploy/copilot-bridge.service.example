@@ -1,0 +1,26 @@
+[Unit]
+Description=Copilot Discord Bridge (Dangerbot)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Change User/Group to match your setup
+User=root
+Group=root
+# Set to the directory containing run.sh and discord_to_copilot_bridge.py
+WorkingDirectory=/path/to/dangerbot
+Environment=HOME=/root
+Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+Environment=PYTHONUNBUFFERED=1
+# Load your .env file
+EnvironmentFile=/path/to/dangerbot/.env
+ExecStartPre=/usr/bin/mkdir -p /home/root/.copilot
+ExecStart=/usr/bin/bash /path/to/dangerbot/run.sh
+Restart=always
+RestartSec=5
+StandardOutput=append:/path/to/dangerbot/logs/bridge.log
+StandardError=append:/path/to/dangerbot/logs/bridge.log
+
+[Install]
+WantedBy=multi-user.target
