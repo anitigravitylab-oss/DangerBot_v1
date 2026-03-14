@@ -87,6 +87,10 @@ Discord REST API  ──→  チャンネルへの返信
   ```
   インストール方法: [GitHub Copilot in the CLI 公式ドキュメント](https://docs.github.com/ja/copilot/github-copilot-in-the-cli)
 
+- **GitHub Copilot Python SDK**（`github-copilot-sdk` パッケージ）
+  このブリッジは Copilot CLI の Python SDK（`CopilotClient`）を使って内部通信します。
+  `pip install -r requirements.txt` で自動インストールされます。
+
 - **GitHub Copilot の有効なサブスクリプション**
   ```bash
   gh auth status  # 認証済みであることを確認
@@ -117,6 +121,7 @@ pip install -r requirements.txt
 websockets>=12.0
 requests>=2.31.0
 python-dotenv>=1.0.0
+github-copilot-sdk>=0.1.0
 ```
 
 ### 3. 環境変数ファイルを作成
