@@ -21,20 +21,22 @@ from typing import Any, Callable
 import websockets
 from copilot import CopilotClient, PermissionHandler
 
-UA = "DiscordBot (https://github.com/oss-antigravity/dangerbot, 1.0)"
-DEFAULT_PROJECT_ROOT = Path(os.environ.get("COPILOT_PROJECT_ROOT", str(Path.cwd())))
+UA = "DiscordBot (https://adultok.jp, 1.0)"
+DEFAULT_PROJECT_ROOT = Path("/root/projects/adultok-v2")
 DEFAULT_USER_ID = os.environ.get("DISCORD_DEFAULT_USER_ID", "")
 DEFAULT_CHANNEL_ID = os.environ.get("DISCORD_DEFAULT_CHANNEL_ID", "")
-_DEFAULT_STATE_DIR = Path.home() / ".copilot"
-STATE_FILE = Path(os.environ.get("BRIDGE_STATE_FILE", str(_DEFAULT_STATE_DIR / "discord_to_copilot_bridge_state.json")))
-LOCK_FILE = Path(os.environ.get("BRIDGE_LOCK_FILE", str(_DEFAULT_STATE_DIR / "discord_to_copilot_bridge.lock")))
-HEARTBEAT_FILE = Path(os.environ.get("BRIDGE_HEARTBEAT_FILE", str(_DEFAULT_STATE_DIR / "discord_to_copilot_bridge.heartbeat.json")))
+STATE_FILE = Path("/root/.copilot/discord_to_copilot_bridge_state.json")
+LOCK_FILE = Path("/root/.copilot/discord_to_copilot_bridge.lock")
+HEARTBEAT_FILE = Path("/root/projects/persistent_agent/logs/discord_to_copilot_bridge.heartbeat.json")
+SESSION_STATE_DIR = Path.home() / ".copilot" / "session-state"
+MAX_CONTEXT_EXCHANGES = 20
 PROCESSED_LIMIT = 500
 DEFAULT_MODEL = "gpt-5.4"
 DEFAULT_REASONING = "high"
 HEARTBEAT_INTERVAL = 15
 PROGRESS_UPDATE_INTERVAL = 2
 MAX_REPLY_LEN = 1800
+MAX_TASK_TIMEOUT = 600  # 10 minutes - kill hung tasks before they freeze the bridge
 AVAILABLE_MODELS = (
     "claude-haiku-4-5",
     "claude-sonnet-4-5",
@@ -168,6 +170,50 @@ async def heartbeat_while_processing(session_id: str, status: str, stop_event: a
         await asyncio.sleep(HEARTBEAT_INTERVAL)
 
 
+def build_session_summary(session_id: str) -> str:
+    """Read events.jsonl for a session and return a compact conversation summary."""
+    events_path = SESSION_STATE_DIR / session_id / "events.jsonl"
+    if not events_path.exists():
+        return ""
+    try:
+        exchanges: list[tuple[str, str]] = []
+        role_map = {"user.message": "User", "assistant.message": "Assistant"}
+        for line in events_path.read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            event = json.loads(line)
+            etype = event.get("type", "")
+            if etype not in role_map:
+                continue
+            content = (event.get("data") or {}).get("content") or ""
+            content = content.strip()
+            if not content:
+                continue
+            # Strip the Discord bridge header from user messages
+            if etype == "user.message" and "[User message]" in content:
+                content = content.split("[User message]", 1)[-1].strip()
+            exchanges.append((role_map[etype], content[:300]))
+
+        if not exchanges:
+            return ""
+
+        # Keep only the last MAX_CONTEXT_EXCHANGES turns
+        exchanges = exchanges[-MAX_CONTEXT_EXCHANGES:]
+        lines = [
+            "---",
+            f"[前セッション引き継ぎコンテキスト (session: {session_id[:8]})]",
+            "以下は前のセッションの会話履歴の要約です。参考にして作業を継続してください。",
+            "",
+        ]
+        for role, text in exchanges:
+            lines.append(f"{role}: {text}")
+        lines.append("---")
+        return "\n".join(lines)
+    except Exception as err:
+        log(f"build_session_summary error for {session_id}: {err}", "WARN")
+        return ""
+
+
 def discord_api(method: str, path: str, payload: dict[str, Any] | None = None):
     url = f"https://discord.com/api/v10{path}"
     headers = {"User-Agent": UA}
@@ -182,6 +228,7 @@ def request_json(
     *,
     payload: dict[str, Any] | list[dict[str, Any]] | None = None,
     headers: dict[str, str] | None = None,
+    _retry: int = 3,
 ):
     data = None
     request_headers = {"User-Agent": UA, **(headers or {})}
@@ -189,11 +236,22 @@ def request_json(
         data = json.dumps(payload).encode("utf-8")
         request_headers["Content-Type"] = "application/json"
     req = urllib.request.Request(url, data=data, headers=request_headers, method=method)
-    with urllib.request.urlopen(req, timeout=30) as resp:
-        raw = resp.read()
-    if not raw:
-        return None
-    return json.loads(raw)
+    for attempt in range(_retry):
+        try:
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                raw = resp.read()
+            if not raw:
+                return None
+            return json.loads(raw)
+        except urllib.error.HTTPError as e:
+            if e.code == 429 and attempt < _retry - 1:
+                retry_after = float(e.headers.get("Retry-After") or 5)
+                retry_after = min(retry_after, 60)
+                log(f"Discord API rate-limited (429); retrying in {retry_after}s (attempt {attempt + 1}/{_retry})", "WARN")
+                time.sleep(retry_after)
+                continue
+            raise
+    return None
 
 
 def discover_discord_application_id() -> str:
@@ -439,16 +497,10 @@ class DiscordProgressUpdater:
             await asyncio.sleep(0.5)
 
 
-_PROMPT_PREFIX = os.environ.get(
-    "BRIDGE_PROMPT_PREFIX",
-    f"Discordからの新しい指示です。{DEFAULT_PROJECT_ROOT} を優先して必要な作業を進めてください。",
-)
-
-
 def build_prompt(message: dict[str, Any]) -> str:
     content = (message.get("content") or "").strip()
     lines = [
-        _PROMPT_PREFIX,
+        "Discordからの新しい指示です。/root/projects/adultok-v2 を優先して必要な作業を進めてください。",
         "この実行は固定の Copilot CLI セッションに対する継続プロンプトです。過去の文脈が役立つなら利用してください。",
         "返信はそのまま Discord に返されるので、日本語で簡潔に、結果を先に書いてください。",
         "",
@@ -623,7 +675,7 @@ class CopilotSessionManager:
         config: dict[str, Any] = {
             "model": self.model,
             "working_directory": str(PROJECT_ROOT),
-            "client_name": "copilot-discord-bridge",
+            "client_name": "adultok-discord-bridge",
             "on_permission_request": PermissionHandler.approve_all,
         }
         if supports_reasoning and self.reasoning_effort:
@@ -645,7 +697,21 @@ async def invoke_copilot(
     last_error: Exception | None = None
     for attempt in range(3):
         try:
-            return await manager.send_and_wait(prompt, on_progress=on_progress)
+            return await asyncio.wait_for(
+                manager.send_and_wait(prompt, on_progress=on_progress),
+                timeout=MAX_TASK_TIMEOUT,
+            )
+        except asyncio.TimeoutError:
+            log(f"task timed out after {MAX_TASK_TIMEOUT}s — resetting session", "WARN")
+            try:
+                old_session_id = manager.session_id
+                new_session_id = await manager.reset_session()
+                state["session_id"] = new_session_id
+                save_state(state)
+                log(f"session reset after timeout: {old_session_id} -> {new_session_id}", "WARN")
+            except Exception as reset_err:
+                log(f"session reset after timeout failed: {reset_err}", "WARN")
+            raise RuntimeError(f"タスクが {MAX_TASK_TIMEOUT // 60} 分でタイムアウトしました。セッションをリセットしました。")
         except Exception as err:
             last_error = err
             if is_transient_session_error(err) and attempt < 2:
@@ -685,6 +751,10 @@ def is_cancel_command(message: dict[str, Any]) -> bool:
 
 def is_model_command(message: dict[str, Any]) -> bool:
     return (message.get("content") or "").strip().startswith("!model")
+
+
+def is_status_command(message: dict[str, Any]) -> bool:
+    return (message.get("content") or "").strip() in ("!status", "!ping")
 
 
 async def handle_model_command(
@@ -745,8 +815,15 @@ async def handle_model_command(
             new_session_id = await manager.reset_session()
             state["model"] = requested_model
             state["session_id"] = new_session_id
+            # Build and store context summary from old session
+            summary = build_session_summary(old_session_id)
+            if summary:
+                state["pending_context"] = summary
+                log(f"stored session context from {old_session_id[:8]} -> {new_session_id[:8]}")
             save_state(state)
             response_text = f"✅ モデルを `{old_model}` から `{requested_model}` に切り替えました"
+            if summary:
+                response_text += "\n📋 前セッションの会話履歴を引き継ぎました（次のメッセージに注入）"
             record.update(
                 {
                     "status": "model-switched",
@@ -838,6 +915,80 @@ async def handle_cancel_command(
     save_state(state)
     log(f"processed cancel command {message_id}: status={record['status']}")
     return cancelled
+
+
+async def handle_status_command(
+    message: dict[str, Any],
+    state: dict[str, Any],
+    manager: "CopilotSessionManager | None",
+    processing_task: "asyncio.Task[Any] | None",
+    *,
+    advance_cursor: bool,
+    reply_func: "Callable[[str, str], dict[str, Any] | None] | None" = None,
+) -> bool:
+    message_id = message["id"]
+    existing_record = state.get("processed", {}).get(message_id)
+    if existing_record:
+        if advance_cursor:
+            state["last_user_message_id"] = message_id
+            save_state(state)
+        return False
+
+    now = datetime.now(timezone.utc)
+    lines: list[str] = ["🤖 **dangerbot ステータス**"]
+
+    # Heartbeat file
+    hb_status = "不明"
+    hb_age_str = "不明"
+    try:
+        hb = json.loads(HEARTBEAT_FILE.read_text())
+        hb_ts = datetime.fromisoformat(hb["timestamp"])
+        age_sec = (now - hb_ts).total_seconds()
+        hb_age_str = f"{int(age_sec)}秒前"
+        hb_status = hb.get("status", "不明")
+    except Exception:
+        pass
+
+    is_processing = processing_task is not None and not processing_task.done()
+    if is_processing:
+        lines.append("⚙️ 状態: **タスク処理中**")
+    else:
+        lines.append("✅ 状態: 待機中 (watching)")
+
+    lines.append(f"🕐 最終ハートビート: {hb_age_str} (`{hb_status}`)")
+
+    current_model = (manager.model if manager else None) or state.get("model") or COPILOT_MODEL
+    session_id = (manager.session_id if manager else None) or state.get("session_id") or "?"
+    lines.append(f"🧠 モデル: `{current_model}`")
+    lines.append(f"🔑 セッション: `{session_id[:16]}...`")
+    lines.append(f"🔧 PID: `{os.getpid()}`")
+    lines.append("")
+    lines.append("コマンド: `!status` `!model` `!cancel`")
+
+    response_text = "\n".join(lines)
+
+    if reply_func is None:
+        reply_func = reply_to_discord
+
+    record: dict[str, Any] = {
+        "processed_at": now.isoformat(),
+        "preview": "!status",
+        "status": "status-replied",
+        "session_id": session_id,
+        "model": current_model,
+    }
+    try:
+        reply = reply_func(message_id, response_text)
+        record["reply_message_id"] = (reply or {}).get("id")
+    except Exception as err:
+        record["reply_error"] = str(err)
+
+    if advance_cursor:
+        state["last_user_message_id"] = message_id
+    state.setdefault("processed", {})[message_id] = record
+    save_state(state)
+    log(f"processed status command {message_id}")
+    return True
 
 
 def parse_interaction_model_value(data: dict[str, Any]) -> str:
@@ -994,8 +1145,8 @@ class DiscordGatewayClient:
                 "intents": 0,
                 "properties": {
                     "os": sys.platform,
-                    "browser": "copilot-discord-bridge",
-                    "device": "copilot-discord-bridge",
+                    "browser": "adultok-discord-bridge",
+                    "device": "adultok-discord-bridge",
                 },
             },
         }
@@ -1066,6 +1217,9 @@ async def process_message(
     if is_model_command(message):
         return await handle_model_command(message, state, manager, advance_cursor=True)
 
+    if is_status_command(message):
+        return await handle_status_command(message, state, manager, current_task, advance_cursor=True)
+
     if is_cancel_command(message):
         await handle_cancel_command(message, state, manager, None, advance_cursor=True)
         return True
@@ -1084,6 +1238,13 @@ async def process_message(
 
     session_id = manager.session_id if manager else (state.get("session_id") or "")
     prompt = build_prompt(message)
+
+    # Inject pending context from a previous session (e.g. after !model switch)
+    pending_context = state.pop("pending_context", None)
+    if pending_context:
+        prompt = pending_context + "\n\n" + prompt
+        save_state(state)
+        log(f"injected pending context ({len(pending_context)} chars) into message {message_id}")
 
     if dry_run:
         state.setdefault("processed", {})[message_id] = {
@@ -1108,7 +1269,11 @@ async def process_message(
         "processed_at": datetime.now(timezone.utc).isoformat(),
         "session_id": manager.session_id,
         "preview": content[:120],
+        "status": "processing",
     }
+    # Save "processing" status immediately so restarts don't re-process this message
+    state.setdefault("processed", {})[message_id] = record
+    save_state(state)
 
     try:
         progress_reply = reply_to_discord(message_id, format_progress_message(0, "受付しました", "-"))
@@ -1212,6 +1377,8 @@ async def run_once(
         for message in messages:
             if is_model_command(message):
                 await handle_model_command(message, state, manager, advance_cursor=True)
+            elif is_status_command(message):
+                await handle_status_command(message, state, manager, current_task, advance_cursor=True)
             elif is_cancel_command(message):
                 await handle_cancel_command(message, state, manager, None, advance_cursor=True)
             else:
@@ -1297,9 +1464,11 @@ async def async_main() -> int:
     if args.channel_id:
         DISCORD_CHANNEL_ID = args.channel_id
         suffix = args.channel_id
-        STATE_FILE = Path(os.environ.get("BRIDGE_STATE_FILE", str(_DEFAULT_STATE_DIR / f"discord_to_copilot_bridge_{suffix}_state.json")))
-        LOCK_FILE = Path(os.environ.get("BRIDGE_LOCK_FILE", str(_DEFAULT_STATE_DIR / f"discord_to_copilot_bridge_{suffix}.lock")))
-        HEARTBEAT_FILE = Path(os.environ.get("BRIDGE_HEARTBEAT_FILE", str(_DEFAULT_STATE_DIR / f"discord_to_copilot_bridge_{suffix}.heartbeat.json")))
+        STATE_FILE = Path(f"/root/.copilot/discord_to_copilot_bridge_{suffix}_state.json")
+        LOCK_FILE = Path(f"/root/.copilot/discord_to_copilot_bridge_{suffix}.lock")
+        HEARTBEAT_FILE = Path(
+            f"/root/projects/persistent_agent/logs/discord_to_copilot_bridge_{suffix}.heartbeat.json"
+        )
     if args.user_id:
         global DISCORD_USER_IDS
         DISCORD_USER_IDS = {uid.strip() for uid in args.user_id.split(",") if uid.strip()}
@@ -1321,6 +1490,14 @@ async def async_main() -> int:
     if args.session_id:
         state["session_id"] = args.session_id
         save_state(state)
+
+    # Mark any in-flight messages as interrupted (prevents re-processing on restart)
+    interrupted = [mid for mid, rec in state.get("processed", {}).items() if rec.get("status") == "processing"]
+    if interrupted:
+        for mid in interrupted:
+            state["processed"][mid]["status"] = "interrupted"
+        save_state(state)
+        log(f"marked {len(interrupted)} interrupted message(s) on startup: {interrupted}")
 
     stop_event = asyncio.Event()
 
@@ -1363,8 +1540,14 @@ async def async_main() -> int:
 
         if args.watch and not args.dry_run:
             application_id = discover_discord_application_id()
-            register_slash_commands(application_id)
-            log(f"registered Discord slash commands for application {application_id}")
+            try:
+                register_slash_commands(application_id)
+                log(f"registered Discord slash commands for application {application_id}")
+            except urllib.error.HTTPError as e:
+                if e.code == 429:
+                    log(f"Discord slash command registration rate-limited (429); skipping (commands already registered)", "WARN")
+                else:
+                    raise
             gateway_client = DiscordGatewayClient()
             gateway_task = asyncio.create_task(
                 watch_gateway_interactions(gateway_client, state, manager, stop_event)
