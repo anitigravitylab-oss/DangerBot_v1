@@ -337,6 +337,12 @@ bash create_bridge.sh \
 
 `--dry-run` を付けると設定生成だけ行い、起動はしません。`--foreground` を付けるとその場で前面実行します。
 
+**運用メモ:**
+
+- `create_bridge.sh` は `copilot` を自動検出します。標準 PATH にない場合は `--copilot-bin-dir /path/to/bin` または `.env` の `COPILOT_BIN_DIR` を使ってください。
+- 自動起動を安定させたい場合は、`create_bridge.sh` のバックグラウンド実行よりも `systemd`、`tmux`、`screen` などのプロセス管理下で動かすのを推奨します。
+- `list_bridges.sh` の状態表示は PID と heartbeat ファイルを元にした簡易表示です。プロセスが止まったあとも heartbeat の最後の状態が残ることがあります。
+
 作成済み bridge の一覧:
 
 ```bash
@@ -517,6 +523,28 @@ Copilot が長時間応答しない場合や、誤った指示を送ってしま
    # または
    ps aux | grep discord_to_copilot_bridge
    ```
+
+5. **`copilot` CLI が見つかるか**
+   ```bash
+   command -v copilot
+   copilot --version
+   ```
+   見つからない場合は GitHub Copilot CLI をインストールするか、`.env` に `COPILOT_BIN_DIR=/path/to/bin` を設定してください。
+
+### `create_bridge.sh` で起動した bridge がすぐ止まる
+
+まずは前面実行でログを確認してください。
+
+```bash
+bash create_bridge.sh \
+  --name test-bridge \
+  --channel-id 123456789012345678 \
+  --user-id 987654321098765432 \
+  --project-root /home/user/project \
+  --foreground
+```
+
+前面実行では動くのにバックグラウンド起動が不安定な場合は、`systemd` や `tmux` などのプロセス管理下で動かす方が安定します。
 
 ---
 
