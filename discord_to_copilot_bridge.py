@@ -7,6 +7,7 @@ import base64
 import fcntl
 import json
 import os
+import shutil
 import signal
 import subprocess
 import sys
@@ -88,6 +89,9 @@ PROJECT_ROOT = Path(
     or os.environ.get("COPILOT_PROJECT_ROOT")
     or str(CONFIG_ROOT)
 ).expanduser().resolve()
+COPILOT_BIN_DIR = ENV.get("COPILOT_BIN_DIR") or os.environ.get("COPILOT_BIN_DIR", "")
+if COPILOT_BIN_DIR:
+    os.environ["PATH"] = f"{COPILOT_BIN_DIR}:{os.environ.get('PATH', '')}"
 DISCORD_TOKEN = ENV.get("DISCORD_BOT_TOKEN") or os.environ.get("DISCORD_BOT_TOKEN", "")
 DISCORD_CHANNEL_ID = ENV.get("DISCORD_CHANNEL_INSTRUCTIONS") or os.environ.get(
     "DISCORD_CHANNEL_INSTRUCTIONS", DEFAULT_CHANNEL_ID
@@ -1655,6 +1659,12 @@ async def watch_gateway_interactions(
 
 
 def ensure_sdk_available() -> None:
+    copilot_path = shutil.which("copilot")
+    if not copilot_path:
+        raise RuntimeError(
+            "copilot CLI not found in PATH. Install GitHub Copilot CLI first, "
+            "or set COPILOT_BIN_DIR to the directory containing the copilot binary."
+        )
     result = subprocess.run(
         [sys.executable, "-c", "from copilot import CopilotClient; print('ok')"],
         capture_output=True,

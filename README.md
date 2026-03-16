@@ -91,6 +91,7 @@ Discord REST API → チャンネルに返信
   インストール方法: [GitHub Copilot in the CLI 公式ドキュメント](https://docs.github.com/ja/copilot/github-copilot-in-the-cli)
 
   > ℹ️ **SDK が内部で自動的に `copilot` コマンドを起動**するため、直接操作は不要ですが、バイナリが PATH に存在している必要があります。
+  > `copilot` が標準 PATH にない場合は、`.env` に `COPILOT_BIN_DIR=/path/to/bin` を設定してください。
 
 - **GitHub Copilot Python SDK**（`github-copilot-sdk` パッケージ）
   このブリッジは `CopilotClient` を通じて SDK 経由で Copilot と通信します。
@@ -214,6 +215,7 @@ COPILOT_PROJECT_ROOT=/home/user/my-project
 # ── オプション ──────────────────────────────────────────
 DISCORD_COPILOT_MODEL=gpt-5.4
 DISCORD_COPILOT_SESSION_ID=
+COPILOT_BIN_DIR=/path/to/bin
 
 # ファイルパスの上書き（複数ブリッジ運用時に有用）
 # BRIDGE_STATE_FILE=~/.copilot/bridge_state.json
@@ -234,6 +236,7 @@ DISCORD_COPILOT_SESSION_ID=
 | `COPILOT_PROJECT_ROOT` | ✅ | — | Copilot が作業するプロジェクトの絶対パス |
 | `DISCORD_COPILOT_MODEL` | — | `gpt-5.4` | デフォルトで使用する AI モデル |
 | `DISCORD_COPILOT_SESSION_ID` | — | （自動生成） | Copilot セッション ID を固定する。空欄の場合は起動ごとに新規セッション |
+| `COPILOT_BIN_DIR` | — | — | `copilot` バイナリが置かれているディレクトリ。PATH にない場合に指定 |
 | `BRIDGE_PROMPT_PREFIX` | — | — | 各 Discord メッセージの前に自動挿入するテキスト（作業ディレクトリの指示など） |
 | `BRIDGE_STATE_FILE` | — | `~/.copilot/discord_to_copilot_bridge_state.json` | 状態ファイルのパスを上書き |
 | `BRIDGE_LOCK_FILE` | — | `~/.copilot/discord_to_copilot_bridge.lock` | ロックファイルのパスを上書き |

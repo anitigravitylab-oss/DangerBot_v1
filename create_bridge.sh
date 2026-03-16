@@ -22,6 +22,7 @@ Optional:
   --model NAME                Override model (default: DISCORD_COPILOT_MODEL or gpt-5.4)
   --base-env PATH             Base env file with DISCORD_BOT_TOKEN (default: ./.env)
   --python PATH               Python executable (default: ./.venv/bin/python)
+  --copilot-bin-dir PATH      Directory containing the copilot binary
   --dry-run                   Only print the generated config, do not start the bridge
   --foreground                Run in foreground instead of background
   --help                      Show this help
@@ -55,6 +56,7 @@ USER_ID=""
 PROJECT_ROOT=""
 SESSION_ID=""
 MODEL=""
+COPILOT_BIN_DIR=""
 DRY_RUN=0
 FOREGROUND=0
 
@@ -102,6 +104,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --python)
       PYTHON_BIN="${2:-}"
+      shift 2
+      ;;
+    --copilot-bin-dir)
+      COPILOT_BIN_DIR="${2:-}"
       shift 2
       ;;
     --dry-run)
@@ -155,6 +161,27 @@ set +a
 
 if [[ -z "${DISCORD_BOT_TOKEN:-}" ]]; then
   echo "DISCORD_BOT_TOKEN is missing in $BASE_ENV" >&2
+  exit 1
+fi
+
+if [[ -z "$COPILOT_BIN_DIR" ]]; then
+  copilot_path="$(command -v copilot || true)"
+  if [[ -n "$copilot_path" ]]; then
+    COPILOT_BIN_DIR="$(dirname "$copilot_path")"
+  fi
+fi
+
+if [[ -z "$COPILOT_BIN_DIR" ]]; then
+  cat >&2 <<'EOF'
+copilot CLI was not found.
+
+Install GitHub Copilot CLI first, then re-run this command.
+Docs:
+  https://docs.github.com/copilot/github-copilot-in-the-cli
+
+If copilot is already installed in a non-standard location, re-run with:
+  --copilot-bin-dir /path/to/bin
+EOF
   exit 1
 fi
 
@@ -215,6 +242,7 @@ DISCORD_INSTRUCTION_USER_ID=${USER_ID}
 COPILOT_PROJECT_ROOT=${PROJECT_ROOT}
 DISCORD_COPILOT_MODEL=${MODEL}
 DISCORD_COPILOT_SESSION_ID=${SESSION_ID}
+COPILOT_BIN_DIR=${COPILOT_BIN_DIR}
 BRIDGE_STATE_FILE=${STATE_FILE}
 BRIDGE_LOCK_FILE=${LOCK_FILE}
 BRIDGE_HEARTBEAT_FILE=${HEARTBEAT_FILE}
@@ -223,6 +251,7 @@ EOF
 echo "instance_name=${INSTANCE_SLUG}"
 echo "channel_id=${CHANNEL_ID}"
 echo "session_id=${SESSION_ID}"
+echo "copilot_bin_dir=${COPILOT_BIN_DIR}"
 echo "env_file=${ENV_FILE}"
 echo "log_file=${LOG_FILE}"
 
