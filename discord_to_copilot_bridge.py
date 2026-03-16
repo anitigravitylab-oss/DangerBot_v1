@@ -22,9 +22,9 @@ import websockets
 from copilot import CopilotClient, PermissionHandler
 
 UA = "DiscordBot (https://github.com/anitigravitylab-oss/dangerbot, 1.0)"
-DEFAULT_PROJECT_ROOT = Path(os.environ.get("PROJECT_ROOT", str(Path.cwd())))
-DEFAULT_USER_ID = os.environ.get("AUTHORIZED_USER_ID", "")
-DEFAULT_CHANNEL_ID = "1481344662810923009"
+DEFAULT_PROJECT_ROOT = Path(__file__).resolve().parent
+DEFAULT_USER_ID = ""
+DEFAULT_CHANNEL_ID = ""
 STATE_FILE = Path("/root/.copilot/discord_to_copilot_bridge_state.json")
 LOCK_FILE = Path("/root/.copilot/discord_to_copilot_bridge.lock")
 HEARTBEAT_FILE = Path.home() / ".copilot" / "discord_to_copilot_bridge.heartbeat.json"
@@ -59,20 +59,20 @@ def log(message: str, level: str = "INFO") -> None:
     print(f"[copilot-bridge {level} {ts}] {message}", flush=True)
 
 
-def find_project_root() -> Path:
+def find_config_root() -> Path:
     start = Path(__file__).resolve().parent
     for candidate in [start, *start.parents]:
-        if (candidate / ".env").exists() and (candidate / "server").exists():
+        if (candidate / ".env").exists():
             return candidate
     return DEFAULT_PROJECT_ROOT
 
 
-PROJECT_ROOT = find_project_root()
+CONFIG_ROOT = find_config_root()
 
 
-def load_env() -> dict[str, str]:
+def load_env(config_root: Path) -> dict[str, str]:
     env: dict[str, str] = {}
-    env_path = PROJECT_ROOT / ".env"
+    env_path = config_root / ".env"
     if not env_path.exists():
         return env
     for line in env_path.read_text(encoding="utf-8").splitlines():
@@ -82,7 +82,12 @@ def load_env() -> dict[str, str]:
     return env
 
 
-ENV = load_env()
+ENV = load_env(CONFIG_ROOT)
+PROJECT_ROOT = Path(
+    ENV.get("COPILOT_PROJECT_ROOT")
+    or os.environ.get("COPILOT_PROJECT_ROOT")
+    or str(CONFIG_ROOT)
+).expanduser().resolve()
 DISCORD_TOKEN = ENV.get("DISCORD_BOT_TOKEN") or os.environ.get("DISCORD_BOT_TOKEN", "")
 DISCORD_CHANNEL_ID = ENV.get("DISCORD_CHANNEL_INSTRUCTIONS") or os.environ.get(
     "DISCORD_CHANNEL_INSTRUCTIONS", DEFAULT_CHANNEL_ID
@@ -91,7 +96,7 @@ _raw_user_ids = ENV.get("DISCORD_INSTRUCTION_USER_ID") or os.environ.get(
     "DISCORD_INSTRUCTION_USER_ID", DEFAULT_USER_ID
 )
 DISCORD_USER_IDS: set[str] = {uid.strip() for uid in _raw_user_ids.split(",") if uid.strip()}
-DISCORD_USER_ID = next(iter(DISCORD_USER_IDS))  # primary (for legacy compat)
+DISCORD_USER_ID = next(iter(DISCORD_USER_IDS), "")
 COPILOT_MODEL = ENV.get("DISCORD_COPILOT_MODEL") or os.environ.get(
     "DISCORD_COPILOT_MODEL", DEFAULT_MODEL
 )
@@ -1675,6 +1680,12 @@ async def async_main() -> int:
 
     if not DISCORD_TOKEN:
         log("DISCORD_BOT_TOKEN missing", "ERROR")
+        return 1
+    if not DISCORD_CHANNEL_ID:
+        log("DISCORD_CHANNEL_INSTRUCTIONS missing", "ERROR")
+        return 1
+    if not DISCORD_USER_IDS:
+        log("DISCORD_INSTRUCTION_USER_ID missing", "ERROR")
         return 1
 
     try:
