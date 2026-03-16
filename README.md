@@ -367,6 +367,8 @@ bash stop_bridge.sh --name project-a --delete-files
 
 サーバーを再起動してもボットが自動的に起動するよう、systemd サービスとして登録します。
 
+> ℹ️ このセクションは **単一 bridge を常時起動する** 想定です。`create_bridge.sh` で作成した複数 bridge を常時運用したい場合は、インスタンスごとに別 service を切るか、tmux / screen などのプロセス管理を使ってください。
+
 ### 1. サービスファイルをコピー
 
 ```bash
@@ -379,27 +381,34 @@ cp deploy/copilot-bridge.service.example /etc/systemd/system/copilot-bridge.serv
 nano /etc/systemd/system/copilot-bridge.service
 ```
 
-以下の箇所を自分の環境に合わせて変更してください:
+以下の箇所を自分の環境に合わせて変更してください。たとえば `/root/dangerbot` に clone した場合は次のようになります:
 
 ```ini
 [Unit]
 Description=Dangerbot — Discord Copilot Bridge
-After=network.target
+After=network-online.target
+Wants=network-online.target
 
 [Service]
 Type=simple
-User=your-username                          # ← 実行ユーザーに変更
-WorkingDirectory=/path/to/dangerbot-oss     # ← クローン先のパスに変更
-EnvironmentFile=/path/to/dangerbot-oss/.env # ← .env のパスに変更
-ExecStart=/usr/bin/bash run.sh
+User=root
+Group=root
+WorkingDirectory=/root/dangerbot
+Environment=HOME=/root
+Environment=PYTHONUNBUFFERED=1
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
+EnvironmentFile=/root/dangerbot/.env
+ExecStart=/usr/bin/bash /root/dangerbot/run.sh
 Restart=always
 RestartSec=5
-StandardOutput=append:/var/log/copilot-bridge.log
-StandardError=append:/var/log/copilot-bridge-error.log
+StandardOutput=append:/root/.copilot/logs/copilot-bridge.log
+StandardError=append:/root/.copilot/logs/copilot-bridge.log
 
 [Install]
 WantedBy=multi-user.target
 ```
+
+`copilot` が標準 PATH にない場合は、`.env` に `COPILOT_BIN_DIR=/path/to/bin` を設定するか、service 側の `Environment=PATH=...` にそのディレクトリを含めてください。
 
 ### 3. サービスを有効化して起動
 
@@ -421,7 +430,7 @@ systemctl status copilot-bridge --no-pager
 journalctl -u copilot-bridge -f
 
 # ログファイルを直接確認
-tail -f /var/log/copilot-bridge.log
+tail -f /root/.copilot/logs/copilot-bridge.log
 ```
 
 ### サービスの操作コマンド
