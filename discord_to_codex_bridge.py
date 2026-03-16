@@ -29,17 +29,17 @@ sys.path.insert(0, str(Path(__file__).parent))
 from codex_mcp_client import SyncCodexClient, CodexMCPError
 
 # ── 設定 ──────────────────────────────────────────────────────────
-ENV_FILE = "/root/projects/adultok-v2/.env"
-PROJECT_ROOT = "/root/projects/adultok-v2"
+ENV_FILE = os.environ.get("ENV_FILE", str(Path(os.path.dirname(os.path.abspath(__file__))) / ".env"))
+PROJECT_ROOT = os.environ.get("PROJECT_ROOT", os.path.dirname(os.path.abspath(__file__)))
 STATE_DIR = Path.home() / ".codex"
 STATE_FILE = STATE_DIR / "discord_to_codex_bridge_state.json"
 LOCK_FILE = STATE_DIR / "discord_to_codex_bridge.lock"
-LOG_DIR = Path("/root/projects/persistent_agent/logs")
+LOG_DIR = Path(os.environ.get("LOG_DIR", str(Path.home() / ".dangerbot" / "logs")))
 
 DISCORD_API = "https://discord.com/api/v10"
-DEFAULT_CHANNEL = "1483207421546594464"
+DEFAULT_CHANNEL = os.environ.get("CODEX_DISCORD_CHANNEL", "")
 DEFAULT_POLL_INTERVAL = 10  # seconds
-AUTHORIZED_USER_IDS = {"1134768603133124718"}  # tototo124
+AUTHORIZED_USER_IDS = {uid.strip() for uid in os.environ.get("AUTHORIZED_USER_IDS", "").split(",") if uid.strip()}
 MAX_REPLY_LEN = 1900
 CODEX_TIMEOUT = 600  # 10分
 
@@ -123,7 +123,7 @@ def discord_request(method: str, path: str, data: dict = None, retries: int = 3)
     headers = {
         "Authorization": f"Bot {BOT_TOKEN}",
         "Content-Type": "application/json",
-        "User-Agent": "DiscordBot (https://adultok.jp, 1.0)",
+        "User-Agent": "DiscordBot (https://github.com/anitigravitylab-oss/dangerbot, 1.0)",
     }
     body = json.dumps(data).encode() if data else None
     for attempt in range(retries):

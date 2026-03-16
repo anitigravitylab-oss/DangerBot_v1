@@ -21,13 +21,13 @@ from typing import Any, Callable
 import websockets
 from copilot import CopilotClient, PermissionHandler
 
-UA = "DiscordBot (https://adultok.jp, 1.0)"
-DEFAULT_PROJECT_ROOT = Path("/root/projects/adultok-v2")
-DEFAULT_USER_ID = "1134768603133124718"
+UA = "DiscordBot (https://github.com/anitigravitylab-oss/dangerbot, 1.0)"
+DEFAULT_PROJECT_ROOT = Path(os.environ.get("PROJECT_ROOT", str(Path.cwd())))
+DEFAULT_USER_ID = os.environ.get("AUTHORIZED_USER_ID", "")
 DEFAULT_CHANNEL_ID = "1481344662810923009"
 STATE_FILE = Path("/root/.copilot/discord_to_copilot_bridge_state.json")
 LOCK_FILE = Path("/root/.copilot/discord_to_copilot_bridge.lock")
-HEARTBEAT_FILE = Path("/root/projects/persistent_agent/logs/discord_to_copilot_bridge.heartbeat.json")
+HEARTBEAT_FILE = Path.home() / ".copilot" / "discord_to_copilot_bridge.heartbeat.json"
 SESSION_STATE_DIR = Path.home() / ".copilot" / "session-state"
 MAX_CONTEXT_EXCHANGES = 20
 PROCESSED_LIMIT = 500
@@ -591,7 +591,7 @@ class DiscordProgressUpdater:
 def build_prompt(message: dict[str, Any]) -> str:
     content = (message.get("content") or "").strip()
     lines = [
-        "Discordからの新しい指示です。/root/projects/adultok-v2 を優先して必要な作業を進めてください。",
+        f"Discordからの新しい指示です。{PROJECT_ROOT} を優先して必要な作業を進めてください。",
         "この実行は固定の Copilot CLI セッションに対する継続プロンプトです。過去の文脈が役立つなら利用してください。",
         "返信はそのまま Discord に返されるので、日本語で簡潔に、結果を先に書いてください。",
         "",
@@ -807,7 +807,7 @@ class CopilotSessionManager:
         config: dict[str, Any] = {
             "model": self.model,
             "working_directory": str(PROJECT_ROOT),
-            "client_name": "adultok-discord-bridge",
+            "client_name": "dangerbot-discord-bridge",
             "on_permission_request": PermissionHandler.approve_all,
         }
         if supports_reasoning and self.reasoning_effort:
@@ -1340,8 +1340,8 @@ class DiscordGatewayClient:
                 "intents": 0,
                 "properties": {
                     "os": sys.platform,
-                    "browser": "adultok-discord-bridge",
-                    "device": "adultok-discord-bridge",
+                    "browser": "dangerbot-discord-bridge",
+                    "device": "dangerbot-discord-bridge",
                 },
             },
         }
@@ -1665,7 +1665,7 @@ async def async_main() -> int:
         STATE_FILE = Path(f"/root/.copilot/discord_to_copilot_bridge_{suffix}_state.json")
         LOCK_FILE = Path(f"/root/.copilot/discord_to_copilot_bridge_{suffix}.lock")
         HEARTBEAT_FILE = Path(
-            f"/root/projects/persistent_agent/logs/discord_to_copilot_bridge_{suffix}.heartbeat.json"
+            Path.home() / ".copilot" / f"discord_to_copilot_bridge_{suffix}.heartbeat.json"
         )
     if args.user_id:
         global DISCORD_USER_IDS

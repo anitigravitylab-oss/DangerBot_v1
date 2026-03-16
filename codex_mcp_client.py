@@ -7,6 +7,7 @@ Copilot SDK の CopilotClient に近い API を提供する。
 
 Usage:
     import asyncio
+import os
     from codex_mcp_client import CodexMCPClient
 
     async def main():
@@ -24,6 +25,7 @@ Usage:
 """
 
 import asyncio
+import os
 import json
 import subprocess
 import threading
@@ -33,7 +35,7 @@ from pathlib import Path
 from typing import Optional
 
 # デフォルト設定
-DEFAULT_CWD = "/root/projects/adultok-v2"
+DEFAULT_CWD = os.environ.get("PROJECT_ROOT", os.getcwd())
 DEFAULT_SANDBOX = "danger-full-access"
 DEFAULT_MODEL = None  # None = codex のデフォルト設定を使用
 
