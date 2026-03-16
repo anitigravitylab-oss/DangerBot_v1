@@ -29,20 +29,17 @@ sys.path.insert(0, str(Path(__file__).parent))
 from codex_mcp_client import SyncCodexClient, CodexMCPError
 
 # ── 設定 ──────────────────────────────────────────────────────────
-ENV_FILE = os.environ.get("ENV_FILE", ".env")
-PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
+ENV_FILE = "/root/projects/adultok-v2/.env"
+PROJECT_ROOT = "/root/projects/adultok-v2"
 STATE_DIR = Path.home() / ".codex"
 STATE_FILE = STATE_DIR / "discord_to_codex_bridge_state.json"
 LOCK_FILE = STATE_DIR / "discord_to_codex_bridge.lock"
-LOG_DIR = Path.home() / ".dangerbot" / "logs"
+LOG_DIR = Path("/root/projects/persistent_agent/logs")
 
 DISCORD_API = "https://discord.com/api/v10"
-# Override with CODEX_DISCORD_CHANNEL env var
-DEFAULT_CHANNEL = os.environ.get("CODEX_DISCORD_CHANNEL", "")
+DEFAULT_CHANNEL = "1483207421546594464"
 DEFAULT_POLL_INTERVAL = 10  # seconds
-# 環境変数 AUTHORIZED_USER_IDS (カンマ区切り) で許可ユーザーを指定。未設定時は全員許可。
-_auth_env = os.environ.get("AUTHORIZED_USER_IDS", "")
-AUTHORIZED_USER_IDS: set = set(_auth_env.split(",")) if _auth_env.strip() else set()
+AUTHORIZED_USER_IDS = {"1134768603133124718"}  # tototo124
 MAX_REPLY_LEN = 1900
 CODEX_TIMEOUT = 600  # 10分
 
@@ -64,9 +61,6 @@ def load_env() -> dict:
 
 ENV = load_env()
 BOT_TOKEN = ENV.get("DISCORD_BOT_TOKEN", os.environ.get("DISCORD_BOT_TOKEN", ""))
-# .env からも DEFAULT_CHANNEL を補完
-if not DEFAULT_CHANNEL:
-    DEFAULT_CHANNEL = ENV.get("CODEX_DISCORD_CHANNEL", "")
 
 
 # ── ロギング ──────────────────────────────────────────────────────
@@ -369,6 +363,17 @@ def process_message(
             cwd=cwd,
             model=state.get("model"),
         )
+        # "Session not found" エラー → thread_id をリセットして新規セッションで再試行
+        if not result["success"] and "session not found" in result["message"].lower():
+            log(f"  ⚠️ Session not found, resetting thread_id and retrying as new session")
+            state.pop("thread_id", None)
+            result = run_codex_mcp(
+                client=client,
+                prompt=content,
+                thread_id=None,
+                cwd=cwd,
+                model=state.get("model"),
+            )
     finally:
         if updater:
             updater.stop()

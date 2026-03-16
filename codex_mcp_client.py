@@ -25,7 +25,6 @@ Usage:
 
 import asyncio
 import json
-import os
 import subprocess
 import threading
 import uuid
@@ -34,7 +33,7 @@ from pathlib import Path
 from typing import Optional
 
 # デフォルト設定
-DEFAULT_CWD = os.getcwd()
+DEFAULT_CWD = "/root/projects/adultok-v2"
 DEFAULT_SANDBOX = "danger-full-access"
 DEFAULT_MODEL = None  # None = codex のデフォルト設定を使用
 
@@ -81,6 +80,8 @@ class CodexMCPClient:
         self._reader_thread: Optional[threading.Thread] = None
         self._next_id = 2  # 1 は initialize で使用
         self._running = False
+        # 現 MCP プロセスが開始したスレッドのみ codex-reply で処理できる
+        self._known_threads: set = set()
 
     # ── async context manager ────────────────────────────────────
     async def __aenter__(self):
@@ -104,6 +105,7 @@ class CodexMCPClient:
             bufsize=0,
         )
         self._running = True
+        self._known_threads.clear()  # 新プロセスなのでスレッド情報をリセット
 
         # 標準出力を別スレッドで読み続ける
         self._reader_thread = threading.Thread(target=self._read_loop, daemon=True)
@@ -149,23 +151,91 @@ class CodexMCPClient:
         if model or self.model:
             args["model"] = model or self.model
 
-        return await self._call_tool("codex", args)
+        result = await self._call_tool("codex", args)
+        # 成功したら thread_id を現プロセスの既知スレッドに登録
+        if result.thread_id and not result.is_error:
+            self._known_threads.add(result.thread_id)
+        return result
 
     async def reply(
         self,
         thread_id: str,
         prompt: str,
     ) -> CodexResult:
-        """既存セッション (thread_id) に続けてプロンプトを送る"""
+        """既存セッション (thread_id) に続けてプロンプトを送る。
+        
+        現 MCP プロセスが知らないスレッド（再起動後など）は
+        codex exec resume --json にフォールバックして DB から復元する。
+        """
         if not self.is_running():
             await self.start()
+
+        # 現 MCP プロセスが知らない thread_id → subprocess resume にフォールバック
+        if thread_id not in self._known_threads:
+            return await self._subprocess_resume(thread_id, prompt)
 
         # conversationId は非推奨 → threadId のみ使用
         args = {
             "prompt": prompt,
             "threadId": thread_id,
         }
-        return await self._call_tool("codex-reply", args)
+        result = await self._call_tool("codex-reply", args)
+
+        # "Session not found" が返ってきた場合もフォールバック
+        if result.is_error and "session not found" in result.text.lower():
+            self._known_threads.discard(thread_id)
+            return await self._subprocess_resume(thread_id, prompt)
+
+        return result
+
+    async def _subprocess_resume(self, thread_id: str, prompt: str) -> CodexResult:
+        """codex exec resume --json で DB から既存セッションを復元して実行する。
+        
+        MCP プロセスが知らない thread_id を引き継ぐためのフォールバック手段。
+        """
+        cmd = ["codex", "exec", "resume", thread_id, prompt, "--json"]
+        try:
+            proc = await asyncio.get_event_loop().run_in_executor(
+                None,
+                lambda: subprocess.run(
+                    cmd,
+                    capture_output=True,
+                    text=True,
+                    timeout=self.timeout,
+                ),
+            )
+            output = proc.stdout.strip()
+            text_parts = []
+            found_thread_id = thread_id
+            for line in output.splitlines():
+                if not line:
+                    continue
+                try:
+                    obj = json.loads(line)
+                    t = obj.get("type", "")
+                    if t == "thread.started":
+                        found_thread_id = obj.get("thread_id", thread_id)
+                    elif t == "item.completed":
+                        item = obj.get("item", {})
+                        if item.get("type") == "agent_message":
+                            text_parts.append(item.get("text", ""))
+                except json.JSONDecodeError:
+                    pass
+
+            if not text_parts and proc.returncode != 0:
+                err = proc.stderr.strip()
+                return CodexResult(text=f"❌ codex resume 失敗: {err}", thread_id=thread_id, is_error=True)
+
+            # 成功した thread_id を known_threads に登録（次回は MCP で処理できる）
+            # ※ ただし subprocess resume では MCP には登録されないため継続して subprocess を使う
+            self._known_threads.discard(thread_id)  # 敢えて known に入れない
+            return CodexResult(
+                text="\n".join(text_parts) or "（出力なし）",
+                thread_id=found_thread_id,
+                is_error=False,
+            )
+        except Exception as e:
+            return CodexResult(text=f"❌ codex resume エラー: {e}", thread_id=thread_id, is_error=True)
 
     # ── 内部実装 ──────────────────────────────────────────────
     def _send(self, msg: dict):
