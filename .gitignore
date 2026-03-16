@@ -1,5 +1,6 @@
 .env
 .venv/
+.bridge-instances/
 *.log
 *.pid
 *.lock

@@ -106,6 +106,24 @@ COPILOT_REASONING = ENV.get("DISCORD_COPILOT_REASONING") or os.environ.get(
 DISCORD_APPLICATION_ID = ENV.get("DISCORD_APPLICATION_ID") or os.environ.get(
     "DISCORD_APPLICATION_ID", ""
 )
+STATE_FILE = Path(
+    ENV.get("BRIDGE_STATE_FILE")
+    or os.environ.get("BRIDGE_STATE_FILE")
+    or str(STATE_FILE)
+).expanduser()
+LOCK_FILE = Path(
+    ENV.get("BRIDGE_LOCK_FILE")
+    or os.environ.get("BRIDGE_LOCK_FILE")
+    or str(LOCK_FILE)
+).expanduser()
+HEARTBEAT_FILE = Path(
+    ENV.get("BRIDGE_HEARTBEAT_FILE")
+    or os.environ.get("BRIDGE_HEARTBEAT_FILE")
+    or str(HEARTBEAT_FILE)
+).expanduser()
+HAS_CUSTOM_STATE_FILE = "BRIDGE_STATE_FILE" in ENV or "BRIDGE_STATE_FILE" in os.environ
+HAS_CUSTOM_LOCK_FILE = "BRIDGE_LOCK_FILE" in ENV or "BRIDGE_LOCK_FILE" in os.environ
+HAS_CUSTOM_HEARTBEAT_FILE = "BRIDGE_HEARTBEAT_FILE" in ENV or "BRIDGE_HEARTBEAT_FILE" in os.environ
 
 
 def is_discord_message_id(value: Any) -> bool:
@@ -1667,11 +1685,14 @@ async def async_main() -> int:
     if args.channel_id:
         DISCORD_CHANNEL_ID = args.channel_id
         suffix = args.channel_id
-        STATE_FILE = Path(f"/root/.copilot/discord_to_copilot_bridge_{suffix}_state.json")
-        LOCK_FILE = Path(f"/root/.copilot/discord_to_copilot_bridge_{suffix}.lock")
-        HEARTBEAT_FILE = Path(
-            Path.home() / ".copilot" / f"discord_to_copilot_bridge_{suffix}.heartbeat.json"
-        )
+        if not HAS_CUSTOM_STATE_FILE:
+            STATE_FILE = Path(f"/root/.copilot/discord_to_copilot_bridge_{suffix}_state.json")
+        if not HAS_CUSTOM_LOCK_FILE:
+            LOCK_FILE = Path(f"/root/.copilot/discord_to_copilot_bridge_{suffix}.lock")
+        if not HAS_CUSTOM_HEARTBEAT_FILE:
+            HEARTBEAT_FILE = Path(
+                Path.home() / ".copilot" / f"discord_to_copilot_bridge_{suffix}.heartbeat.json"
+            )
     if args.user_id:
         global DISCORD_USER_IDS
         DISCORD_USER_IDS = {uid.strip() for uid in args.user_id.split(",") if uid.strip()}

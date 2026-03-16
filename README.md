@@ -295,6 +295,63 @@ python3 discord_to_copilot_bridge.py --watch --channel-id 222222222222222222 &
 
 > ✅ セッション ID を固定（`DISCORD_COPILOT_SESSION_ID`）することで、ボットを再起動しても同じ Copilot セッション（会話履歴）が引き継がれます。
 
+### 新しいチャンネル・ブリッジ・Copilot セッションをまとめて作る
+
+`create_bridge.sh` を使うと、以下を一度に実行できます。
+
+- 既存チャンネル向けの個別 bridge 設定ファイルを生成
+- 新しい Copilot セッション ID を発行
+- bridge をバックグラウンドで起動
+- 必要なら Discord チャンネル自体も新規作成
+
+既存チャンネルを使う例:
+
+```bash
+bash create_bridge.sh \
+  --name project-a \
+  --channel-id 123456789012345678 \
+  --user-id 987654321098765432 \
+  --project-root /home/user/project-a
+```
+
+新しい Discord チャンネルも作る例:
+
+```bash
+bash create_bridge.sh \
+  --name project-b \
+  --guild-id 111111111111111111 \
+  --channel-name project-b-ops \
+  --category-id 222222222222222222 \
+  --user-id 987654321098765432 \
+  --project-root /home/user/project-b
+```
+
+生成物:
+
+- 個別設定: `.bridge-instances/<name>.env`
+- ログ: `~/.copilot/logs/discord_to_copilot_bridge_<name>.log`
+- 状態ファイル: `~/.copilot/discord_to_copilot_bridge_<name>.*`
+
+`--dry-run` を付けると設定生成だけ行い、起動はしません。`--foreground` を付けるとその場で前面実行します。
+
+作成済み bridge の一覧:
+
+```bash
+bash list_bridges.sh
+```
+
+bridge の停止:
+
+```bash
+bash stop_bridge.sh --name project-a
+```
+
+設定ファイルや状態ファイルも削除する:
+
+```bash
+bash stop_bridge.sh --name project-a --delete-files
+```
+
 ---
 
 ## systemd での常時起動
