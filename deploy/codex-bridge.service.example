@@ -1,0 +1,24 @@
+[Unit]
+Description=Dangerbot Discord to Codex CLI Bridge
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=YOUR_USER
+Group=YOUR_GROUP
+WorkingDirectory=/path/to/dangerbot
+Environment=HOME=/home/YOUR_USER
+Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+Environment=PYTHONUNBUFFERED=1
+# Path to your .env file containing DISCORD_BOT_TOKEN, OPENAI_API_KEY, etc.
+EnvironmentFile=/path/to/dangerbot/.env
+ExecStartPre=/usr/bin/mkdir -p /home/YOUR_USER/.dangerbot/logs
+ExecStart=/usr/bin/bash /path/to/dangerbot/run-codex.sh
+Restart=always
+RestartSec=5
+StandardOutput=append:/home/YOUR_USER/.dangerbot/logs/discord_to_codex_bridge.log
+StandardError=append:/home/YOUR_USER/.dangerbot/logs/discord_to_codex_bridge.log
+
+[Install]
+WantedBy=multi-user.target

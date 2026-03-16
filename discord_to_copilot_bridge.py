@@ -23,8 +23,8 @@ from copilot import CopilotClient, PermissionHandler
 
 UA = "DiscordBot (https://adultok.jp, 1.0)"
 DEFAULT_PROJECT_ROOT = Path("/root/projects/adultok-v2")
-DEFAULT_USER_ID = os.environ.get("DISCORD_DEFAULT_USER_ID", "")
-DEFAULT_CHANNEL_ID = os.environ.get("DISCORD_DEFAULT_CHANNEL_ID", "")
+DEFAULT_USER_ID = "1134768603133124718"
+DEFAULT_CHANNEL_ID = "1481344662810923009"
 STATE_FILE = Path("/root/.copilot/discord_to_copilot_bridge_state.json")
 LOCK_FILE = Path("/root/.copilot/discord_to_copilot_bridge.lock")
 HEARTBEAT_FILE = Path("/root/projects/persistent_agent/logs/discord_to_copilot_bridge.heartbeat.json")
@@ -35,8 +35,10 @@ DEFAULT_MODEL = "gpt-5.4"
 DEFAULT_REASONING = "high"
 HEARTBEAT_INTERVAL = 15
 PROGRESS_UPDATE_INTERVAL = 2
+PROGRESS_FORCE_UPDATE_INTERVAL = 30  # force-refresh elapsed time in Discord even with no new tool activity
 MAX_REPLY_LEN = 1800
-MAX_TASK_TIMEOUT = 600  # 10 minutes - kill hung tasks before they freeze the bridge
+ACTIVITY_TIMEOUT = 300    # 5 min silence (no tool call) → assume hung, reset session
+MAX_ABSOLUTE_TIMEOUT = 7200  # 2 hour hard ceiling regardless of activity
 AVAILABLE_MODELS = (
     "claude-haiku-4-5",
     "claude-sonnet-4-5",
@@ -49,6 +51,7 @@ AVAILABLE_MODELS = (
 )
 LOCK_HANDLES: list[object] = []
 current_task: asyncio.Task[Any] | None = None
+_active_updater: "DiscordProgressUpdater | None" = None  # exposed for !status
 
 
 def log(message: str, level: str = "INFO") -> None:
@@ -419,22 +422,101 @@ def extract_command(arguments: Any) -> str:
     return summarize_text(arguments)
 
 
+def _shorten_command(cmd: str, max_len: int = 70) -> str:
+    """コマンド文字列を人間に読みやすい形に短縮する。"""
+    cmd = cmd.strip()
+    # cd ... && actual_cmd → actual_cmd の部分だけ抽出
+    if "&&" in cmd:
+        parts = [p.strip() for p in cmd.split("&&")]
+        # cd 以外の最初のコマンドを使う
+        meaningful = [p for p in parts if not p.startswith("cd ") and p]
+        if meaningful:
+            cmd = meaningful[0]
+    # パイプ後の部分は省略
+    if "|" in cmd:
+        cmd = cmd.split("|")[0].strip()
+    return cmd[:max_len] + ("…" if len(cmd) > max_len else "")
+
+
 def format_tool_action(tool_name: str, arguments: Any) -> str:
     normalized = (tool_name or "").strip().lower()
-    if normalized == "report_intent":
+
+    if normalized in {"report_intent", "assistant.intent"}:
         if isinstance(arguments, dict):
             intent = str(arguments.get("intent") or "").strip()
             if intent:
                 return intent
         return summarize_text(arguments) or "意図を報告中"
+
     if normalized in {"bash", "run_command"}:
         command = extract_command(arguments)
-        return f"コマンド実行中: {command[:60]}" if command else "コマンド実行中"
+        short = _shorten_command(command) if command else ""
+        return f"コマンド実行: {short}" if short else "コマンド実行中"
+
+    if normalized in {"write_bash"}:
+        return "コマンドに入力中"
+
+    if normalized in {"read_bash"}:
+        return "コマンド出力を読んでいます"
+
     if normalized in {"view", "read_file"}:
-        return f"{extract_filename(arguments)} を読んでいます"
-    if normalized in {"edit", "edit_file", "create"}:
-        return f"{extract_filename(arguments)} を編集中"
-    return tool_name or "処理中"
+        return f"📄 {extract_filename(arguments)} を読んでいます"
+
+    if normalized in {"edit", "edit_file"}:
+        return f"✏️ {extract_filename(arguments)} を編集中"
+
+    if normalized == "create":
+        return f"📝 {extract_filename(arguments)} を作成中"
+
+    if normalized == "grep":
+        if isinstance(arguments, dict):
+            pattern = str(arguments.get("pattern") or "").strip()[:50]
+            target = str(arguments.get("path") or arguments.get("glob") or "").strip()
+            target_name = Path(target).name if target else ""
+            if pattern and target_name:
+                return f"🔍 「{pattern}」を {target_name} で検索中"
+            if pattern:
+                return f"🔍 「{pattern}」をコード検索中"
+        return "コード検索中"
+
+    if normalized == "glob":
+        if isinstance(arguments, dict):
+            pattern = str(arguments.get("pattern") or "").strip()[:60]
+            return f"🗂 ファイル検索: {pattern}" if pattern else "ファイル検索中"
+        return "ファイル検索中"
+
+    if normalized == "sql":
+        if isinstance(arguments, dict):
+            desc = str(arguments.get("description") or arguments.get("query") or "").strip()[:60]
+            return f"🗃 DB: {desc}" if desc else "DB操作中"
+        return "DB操作中"
+
+    if normalized == "task":
+        if isinstance(arguments, dict):
+            desc = str(arguments.get("description") or arguments.get("prompt") or "").strip()[:60]
+            agent = str(arguments.get("agent_type") or "").strip()
+            label = f"[{agent}] {desc}" if agent and desc else (desc or agent or "")
+            return f"🤖 サブエージェント: {label}" if label else "サブエージェント起動中"
+        return "サブエージェント起動中"
+
+    if normalized in {"read_agent"}:
+        return "🤖 エージェント結果を確認中"
+
+    if normalized in {"list_agents", "list_bash"}:
+        return "プロセス一覧を確認中"
+
+    if normalized == "web_fetch":
+        if isinstance(arguments, dict):
+            url = str(arguments.get("url") or "").strip()[:70]
+            return f"🌐 Web閲覧: {url}" if url else "Web取得中"
+        return "Web取得中"
+
+    # 未知ツールはツール名を日本語ラベルに変換
+    _tool_labels: dict[str, str] = {
+        "stop_bash": "コマンド停止中",
+        "search": "検索中",
+    }
+    return _tool_labels.get(normalized, tool_name) or "処理中"
 
 
 def format_progress_message(elapsed_seconds: int, current_action: str, prev_action: str) -> str:
@@ -451,6 +533,7 @@ class DiscordProgressUpdater:
         self.started_at = time.monotonic()
         self.current_action = "受付しました"
         self.prev_action = "-"
+        self.last_activity_at = time.monotonic()  # updated on each tool call
         self._dirty = True
         self._last_sent_at = 0.0
         self._stop_event = asyncio.Event()
@@ -462,6 +545,7 @@ class DiscordProgressUpdater:
 
     def update(self, action: str) -> None:
         action = action.strip() or "処理中"
+        self.last_activity_at = time.monotonic()
         if action == self.current_action:
             return
         self.prev_action = self.current_action
@@ -478,22 +562,29 @@ class DiscordProgressUpdater:
 
     async def _run(self) -> None:
         while not self._stop_event.is_set():
-            if self._dirty:
-                now = time.monotonic()
-                if self._last_sent_at == 0.0 or now - self._last_sent_at >= PROGRESS_UPDATE_INTERVAL:
-                    try:
-                        edit_discord_message(
-                            self.reply_message_id,
-                            format_progress_message(
-                                int(now - self.started_at),
-                                self.current_action,
-                                self.prev_action,
-                            ),
-                        )
-                        self._last_sent_at = now
-                        self._dirty = False
-                    except Exception:
-                        pass
+            now = time.monotonic()
+            time_since_last = now - self._last_sent_at if self._last_sent_at > 0.0 else float("inf")
+            # Update if dirty (new tool action) OR every PROGRESS_FORCE_UPDATE_INTERVAL seconds
+            # so the elapsed-time counter keeps moving in Discord — a frozen number = bridge is dead
+            should_send = self._dirty or time_since_last >= PROGRESS_FORCE_UPDATE_INTERVAL
+            if should_send and time_since_last >= PROGRESS_UPDATE_INTERVAL:
+                silent_sec = int(now - self.last_activity_at)
+                action_display = self.current_action
+                if silent_sec >= 30:
+                    action_display = f"{self.current_action} (最終活動: {silent_sec}秒前)"
+                try:
+                    edit_discord_message(
+                        self.reply_message_id,
+                        format_progress_message(
+                            int(now - self.started_at),
+                            action_display,
+                            self.prev_action,
+                        ),
+                    )
+                    self._last_sent_at = now
+                    self._dirty = False
+                except Exception:
+                    pass
             await asyncio.sleep(0.5)
 
 
@@ -600,6 +691,33 @@ class CopilotSessionManager:
             await self._create_session_locked(session_id=None)
             return self.session_id
 
+    async def restore_session(self) -> tuple[bool, str]:
+        """Reconnect to the existing session ID to preserve conversation context.
+
+        Returns (restored, session_id):
+        - restored=True:  same session_id was successfully reconnected
+        - restored=False: reconnect failed; a fresh session was created as fallback
+        """
+        async with self._lock:
+            saved_session_id = self.session_id  # capture BEFORE disconnect
+            if self.session is not None:
+                try:
+                    await self.session.disconnect()
+                except Exception:
+                    pass
+                self.session = None
+            await self._ensure_client_locked()
+            if saved_session_id:
+                try:
+                    await self._create_session_locked(session_id=saved_session_id)
+                    log(f"session restored: {saved_session_id[:16]}...", "INFO")
+                    return True, self.session_id
+                except Exception as err:
+                    log(f"session restore to {saved_session_id[:16]}... failed: {err} — creating new session", "WARN")
+            await self._create_session_locked(session_id=None)
+            log(f"new session created as fallback: {self.session_id[:16]}...", "WARN")
+            return False, self.session_id
+
     async def send_and_wait(
         self,
         prompt: str,
@@ -623,6 +741,20 @@ class CopilotSessionManager:
                 data = getattr(event, "data", None)
                 if event_type == "assistant.turn_start" and on_progress:
                     on_progress("assistant.turn_start", None)
+                    return
+                if event_type == "assistant.intent" and on_progress:
+                    intent = getattr(data, "intent", None) or ""
+                    if intent:
+                        on_progress("assistant.intent", {"intent": intent})
+                    return
+                if event_type == "subagent.started" and on_progress:
+                    name = (
+                        getattr(data, "agent_display_name", None)
+                        or getattr(data, "agent_name", None)
+                        or getattr(data, "name", None)
+                        or ""
+                    )
+                    on_progress("task", {"description": name} if name else {})
                     return
                 if event_type == "tool.execution_start" and on_progress:
                     tool_name = getattr(data, "tool_name", None) or getattr(data, "tool_title", None) or ""
@@ -694,24 +826,75 @@ async def invoke_copilot(
     prompt: str,
     on_progress: Callable[[str, Any], None] | None = None,
 ) -> str:
+    """Invoke Copilot with activity-based timeout.
+
+    Timeouts:
+    - ACTIVITY_TIMEOUT: reset if no tool call for N seconds (hung detection)
+    - MAX_ABSOLUTE_TIMEOUT: hard ceiling regardless of activity (safety net)
+    """
     last_error: Exception | None = None
     for attempt in range(3):
+        last_activity_time = [time.monotonic()]
+        timeout_reason: list[str] = []
+
+        def wrapped_progress(tool_name: str, arguments: Any) -> None:
+            last_activity_time[0] = time.monotonic()
+            if on_progress:
+                on_progress(tool_name, arguments)
+
+        async def watchdog(main_task: asyncio.Task[Any]) -> None:
+            start = time.monotonic()
+            while True:
+                await asyncio.sleep(10)
+                now = time.monotonic()
+                silent_for = now - last_activity_time[0]
+                total = now - start
+                if silent_for >= ACTIVITY_TIMEOUT:
+                    timeout_reason.append("activity")
+                    main_task.cancel()
+                    return
+                if total >= MAX_ABSOLUTE_TIMEOUT:
+                    timeout_reason.append("absolute")
+                    main_task.cancel()
+                    return
+
         try:
-            return await asyncio.wait_for(
-                manager.send_and_wait(prompt, on_progress=on_progress),
-                timeout=MAX_TASK_TIMEOUT,
+            main_task = asyncio.create_task(
+                manager.send_and_wait(prompt, on_progress=wrapped_progress)
             )
-        except asyncio.TimeoutError:
-            log(f"task timed out after {MAX_TASK_TIMEOUT}s — resetting session", "WARN")
+            wdog_task = asyncio.create_task(watchdog(main_task))
             try:
-                old_session_id = manager.session_id
-                new_session_id = await manager.reset_session()
-                state["session_id"] = new_session_id
+                result = await main_task
+                return result
+            except asyncio.CancelledError:
+                if timeout_reason:
+                    raise asyncio.TimeoutError(timeout_reason[0])
+                raise  # external cancel (e.g. !cancel command) — propagate as-is
+            finally:
+                wdog_task.cancel()
+                try:
+                    await wdog_task
+                except (asyncio.CancelledError, Exception):
+                    pass
+        except asyncio.TimeoutError as te:
+            reason = str(te)
+            if reason == "activity":
+                human_reason = f"ツール呼び出しが {ACTIVITY_TIMEOUT // 60} 分間停止しました（フリーズ検知）"
+            else:
+                human_reason = f"タスクが {MAX_ABSOLUTE_TIMEOUT // 60} 時間を超えました（絶対上限）"
+            log(f"task timed out ({reason or 'unknown'}) — attempting session restore", "WARN")
+            try:
+                restored, new_sid = await manager.restore_session()
+                state["session_id"] = new_sid
                 save_state(state)
-                log(f"session reset after timeout: {old_session_id} -> {new_session_id}", "WARN")
-            except Exception as reset_err:
-                log(f"session reset after timeout failed: {reset_err}", "WARN")
-            raise RuntimeError(f"タスクが {MAX_TASK_TIMEOUT // 60} 分でタイムアウトしました。セッションをリセットしました。")
+                if restored and attempt < 2:
+                    log(f"session restored after timeout, retrying prompt (attempt {attempt + 1}/3)", "WARN")
+                    continue  # retry the prompt with the same session context
+                elif not restored:
+                    log(f"session restore failed after timeout, new session: {new_sid[:16]}...", "WARN")
+            except Exception as restore_err:
+                log(f"session restore after timeout failed: {restore_err}", "WARN")
+            raise RuntimeError(f"タスクがタイムアウトしました: {human_reason}。{'セッションを復元して再試行しましたが回復できませんでした' if attempt >= 2 else 'セッションをリセットしました'}。")
         except Exception as err:
             last_error = err
             if is_transient_session_error(err) and attempt < 2:
@@ -720,10 +903,13 @@ async def invoke_copilot(
                 continue
             if is_broken_session_error(err) and attempt < 2:
                 old_session_id = manager.session_id
-                new_session_id = await manager.reset_session()
-                state["session_id"] = new_session_id
+                restored, new_sid = await manager.restore_session()
+                state["session_id"] = new_sid
                 save_state(state)
-                log(f"rotated broken Copilot session {old_session_id} -> {new_session_id}", "WARN")
+                if restored:
+                    log(f"session restored after broken-session error: {old_session_id[:16]}... -> {new_sid[:16]}...", "WARN")
+                else:
+                    log(f"session restore failed, new session: {old_session_id[:16]}... -> {new_sid[:16]}...", "WARN")
                 continue
             if attempt < 2:
                 log(f"copilot transport/session error (attempt {attempt + 1}/3): {err}", "WARN")
@@ -952,6 +1138,15 @@ async def handle_status_command(
     is_processing = processing_task is not None and not processing_task.done()
     if is_processing:
         lines.append("⚙️ 状態: **タスク処理中**")
+        # Show live activity info from the progress updater if available
+        upd = _active_updater
+        if upd is not None:
+            elapsed_sec = int(time.monotonic() - upd.started_at)
+            silent_sec = int(time.monotonic() - upd.last_activity_at)
+            lines.append(f"⏱️ 経過: {elapsed_sec}秒 | 最終活動: {silent_sec}秒前")
+            lines.append(f"🔧 現在: `{upd.current_action}` (直前: `{upd.prev_action}`)")
+            if silent_sec >= ACTIVITY_TIMEOUT:
+                lines.append(f"⚠️ 最終活動から {silent_sec}秒 — まもなくタイムアウト")
     else:
         lines.append("✅ 状態: 待機中 (watching)")
 
@@ -1261,6 +1456,7 @@ async def process_message(
     if manager is None:
         raise RuntimeError("Copilot session manager is required unless --dry-run is used")
 
+    global _active_updater
     put_reaction(message_id, "👀")
     progress_reply = None
     progress_updater = None
@@ -1280,6 +1476,7 @@ async def process_message(
         if progress_reply and progress_reply.get("id"):
             progress_updater = DiscordProgressUpdater(progress_reply["id"])
             progress_updater.start()
+            _active_updater = progress_updater
             record["progress_reply_message_id"] = progress_reply["id"]
     except Exception as err:
         record["progress_reply_error"] = str(err)
@@ -1354,6 +1551,7 @@ async def process_message(
             pass
         if progress_updater:
             await progress_updater.stop()
+        _active_updater = None
         if current_task is asyncio.current_task():
             current_task = None
 

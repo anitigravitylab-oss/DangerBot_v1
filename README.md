@@ -721,6 +721,87 @@ grep -n "処理中\|✅\|👀\|⛔" discord_to_copilot_bridge.py
 
 ---
 
+## 🤖 Codex Bridge（OpenAI Codex CLI 連携）
+
+Copilot bridge に加え、**OpenAI の `codex` CLI** を使った Codex bridge も利用できます。  
+`codex mcp-server` を常駐プロセスとして起動し、MCP/JSON-RPC 2.0 で通信することで  
+**セッションを維持したまま** Discord からコマンドを流し続けることができます。
+
+### Copilot bridge との違い
+
+| 項目 | Copilot Bridge | Codex Bridge |
+|---|---|---|
+| AI バックエンド | GitHub Copilot API | OpenAI API (`codex` CLI) |
+| 接続方式 | SDK（HTTP） | `codex mcp-server`（stdin/stdout JSON-RPC） |
+| セッション管理 | `session.resume` | `thread_id` による継続 |
+| 必要な認証情報 | `GITHUB_TOKEN` | `OPENAI_API_KEY` |
+| 主なコマンド | `discord_to_copilot_bridge.py` | `discord_to_codex_bridge.py` |
+
+### 必要なもの
+
+- Python 3.11+
+- [`codex` CLI](https://github.com/openai/codex) がインストール・認証済みであること  
+  ```bash
+  npm install -g @openai/codex
+  codex  # 初回は認証フロー
+  ```
+- `OPENAI_API_KEY` — 環境変数または `.env` に設定
+
+### 環境変数
+
+| 変数 | 説明 | 必須 |
+|---|---|---|
+| `DISCORD_BOT_TOKEN` | Discord Bot トークン | ✅ |
+| `OPENAI_API_KEY` | OpenAI API キー | ✅ |
+| `CODEX_DISCORD_CHANNEL` | 監視するチャンネル ID | ✅ |
+| `AUTHORIZED_USER_IDS` | 許可ユーザー ID（カンマ区切り）。未設定で全員許可 | — |
+| `ENV_FILE` | `.env` ファイルのパス（デフォルト: `./env`） | — |
+| `CODEX_CWD` | Codex の作業ディレクトリ（デフォルト: スクリプトと同じ） | — |
+
+### 起動方法
+
+**直接実行:**
+
+```bash
+# .env に DISCORD_BOT_TOKEN / OPENAI_API_KEY / CODEX_DISCORD_CHANNEL を記載してから
+python3 discord_to_codex_bridge.py --channel <CHANNEL_ID> --cwd /path/to/project
+```
+
+**run-codex.sh を使う（推奨）:**
+
+```bash
+export CODEX_DISCORD_CHANNEL=<CHANNEL_ID>
+bash run-codex.sh
+```
+
+### systemd で常時起動
+
+```bash
+# テンプレートをコピーして編集
+sudo cp deploy/codex-bridge.service.example /etc/systemd/system/dangerbot-codex.service
+sudo nano /etc/systemd/system/dangerbot-codex.service  # パスとユーザー名を修正
+
+sudo systemctl daemon-reload
+sudo systemctl enable --now dangerbot-codex
+sudo systemctl status dangerbot-codex --no-pager
+```
+
+ログは `~/.dangerbot/logs/discord_to_codex_bridge.log` に出力されます。
+
+---
+
+## Changelog
+
+### v1.2.0（2026-03-XX）
+
+- **Codex Bridge 追加**: `codex mcp-server` を使った常駐接続方式の `discord_to_codex_bridge.py` と `codex_mcp_client.py` を追加
+- **run-codex.sh 追加**: Codex bridge 汎用起動ラッパー（ハードコードパスを全て環境変数化）
+- **deploy/codex-bridge.service.example 追加**: systemd サービスファイルのサンプル
+- **OSS 対応**: すべてのハードコードパスを環境変数・相対パスに置き換え
+- `AUTHORIZED_USER_IDS` を環境変数化（未設定で全員許可）
+
+---
+
 ## Changelog
 
 ### v1.1.0（2026-03-15）
